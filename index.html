@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quick Draw CNN</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f5f5f5; display: flex;
+           flex-direction: column; align-items: center; padding: 2rem; }
+    h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+    p.sub { color: #666; font-size: 14px; margin-bottom: 1.5rem; }
+    #status { font-size: 13px; color: #999; margin-bottom: 1rem; }
+    #canvas {
+      background: white; border: 2px solid #ddd; border-radius: 12px;
+      cursor: crosshair; touch-action: none;
+    }
+    .controls { display: flex; gap: 10px; margin-top: 1rem; }
+    button {
+      padding: 8px 20px; border-radius: 8px; border: none;
+      cursor: pointer; font-size: 14px; font-weight: 500;
+    }
+    #clear-btn { background: #eee; color: #333; }
+    #clear-btn:hover { background: #ddd; }
+    #predict-btn { background: #3b82f6; color: white; }
+    #predict-btn:hover { background: #2563eb; }
+    #predict-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+    #results { margin-top: 1.5rem; width: 300px; }
+    .result-row { margin-bottom: 10px; }
+    .result-label { display: flex; justify-content: space-between;
+                    font-size: 13px; margin-bottom: 3px; }
+    .bar-bg { background: #e5e7eb; border-radius: 4px; height: 8px; }
+    .bar-fg { background: #3b82f6; height: 8px; border-radius: 4px;
+              transition: width .4s ease; }
+    .bar-fg.top { background: #10b981; }
+  </style>
+</head>
+<body>
+  <h1>Quick Draw CNN</h1>
+  <p class="sub">Draw anything — the model guesses what it is</p>
+  <div id="status">⏳ Loading model...</div>
+  <canvas id="canvas" width="300" height="300"></canvas>
+  <div class="controls">
+    <button id="clear-btn" onclick="clearCanvas()">Clear</button>
+    <button id="predict-btn" onclick="runPredict()" disabled>Predict</button>
+  </div>
+  <div id="results"></div>
+
+<script>
+  let model, classes;
+  let drawing = false;
+  let lastX = 0, lastY = 0;
+
+  // ── Load model ──────────────────────────────────────────
+  async function loadModel() {
+    [model, classes] = await Promise.all([
+      tf.loadLayersModel('tfjs_model/model.json'),
+      fetch('classes.json').then(r => r.json())
+    ]);
+    document.getElementById('status').textContent = '✓ Model ready — draw something!';
+    document.getElementById('predict-btn').disabled = false;
+  }
+  loadModel().catch(e => {
+    document.getElementById('status').textContent = '✗ Failed to load model: ' + e.message;
+  });
+
+  // ── Canvas drawing ───────────────────────────────────────
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 8;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  function getPos(e) {
+    const r = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+
+  function startDraw(e) {
+    e.preventDefault();
+    drawing = true;
+    const { x, y } = getPos(e);
+    lastX = x; lastY = y;
+  }
+
+  function draw(e) {
+    e.preventDefault();
+    if (!drawing) return;
+    const { x, y } = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    lastX = x; lastY = y;
+  }
+
+  function stopDraw(e) { e.preventDefault(); drawing = false; }
+
+  canvas.addEventListener('mousedown',  startDraw);
+  canvas.addEventListener('mousemove',  draw);
+  canvas.addEventListener('mouseup',    stopDraw);
+  canvas.addEventListener('mouseleave', stopDraw);
+  canvas.addEventListener('touchstart', startDraw, { passive: false });
+  canvas.addEventListener('touchmove',  draw,      { passive: false });
+  canvas.addEventListener('touchend',   stopDraw,  { passive: false });
+
+  function clearCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    document.getElementById('results').innerHTML = '';
+  }
+
+  // ── Bounding box crop ────────────────────────────────────
+  function getMinBoundingBox(canvas) {
+    const { data, width, height } =
+      ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (data[(y * width + x) * 4 + 3] > 0) {
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    const pad = 10;
+    return {
+      x: Math.max(0,      minX - pad),
+      y: Math.max(0,      minY - pad),
+      w: Math.min(width,  maxX - minX + pad * 2),
+      h: Math.min(height, maxY - minY + pad * 2),
+    };
+  }
+
+  // ── Predict ──────────────────────────────────────────────
+  async function runPredict() {
+    if (!model) return;
+    const box = getMinBoundingBox(canvas);
+    if (box.w <= 0 || box.h <= 0) {
+      alert('Draw something first!'); return;
+    }
+
+    const probs = tf.tidy(() => {
+      const input = tf.browser
+        .fromPixels(canvas, 1)
+        .slice([box.y, box.x, 0], [box.h, box.w, 1])
+        .resizeBilinear([28, 28])
+        .toFloat().div(255)
+        .expandDims(0);                        // [1, 28, 28, 1]
+      return model.predict(input).squeeze();
+    });
+
+    const values = await probs.array();
+    probs.dispose();
+
+    const top5 = values
+      .map((p, i) => ({ label: classes[i], prob: p }))
+      .sort((a, b) => b.prob - a.prob)
+      .slice(0, 5);
+
+    renderResults(top5);
+  }
+
+  function renderResults(top5) {
+    const el = document.getElementById('results');
+    el.innerHTML = top5.map((r, i) => `
+      <div class="result-row">
+        <div class="result-label">
+          <span>${r.label}</span>
+          <span>${(r.prob * 100).toFixed(1)}%</span>
+        </div>
+        <div class="bar-bg">
+          <div class="bar-fg ${i === 0 ? 'top' : ''}"
+               style="width:${(r.prob * 100).toFixed(1)}%"></div>
+        </div>
+      </div>`).join('');
+  }
+</script>
+</body>
+</html>
