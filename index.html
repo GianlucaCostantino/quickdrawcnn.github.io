@@ -56,7 +56,7 @@
   async function loadModel() {
     [model, classes] = await Promise.all([
       tf.loadLayersModel('tfjs_model_vero/model.json'),
-      fetch('classes.json').then(r => r.json())
+      fetch('classes_vero.json').then(r => r.json())
     ]);
     document.getElementById('status').textContent = '✓ Model ready — draw something!';
     document.getElementById('predict-btn').disabled = false;
