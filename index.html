@@ -55,7 +55,7 @@
   // ── Load model ──────────────────────────────────────────
   async function loadModel() {
     [model, classes] = await Promise.all([
-      tf.loadLayersModel('tfjs_model/model.json'),
+      tf.loadLayersModel('tfjs_model_vero/model.json'),
       fetch('classes.json').then(r => r.json())
     ]);
     document.getElementById('status').textContent = '✓ Model ready — draw something!';
