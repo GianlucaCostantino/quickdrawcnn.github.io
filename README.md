@@ -1,1 +1,1 @@
-# https//gianlucacostantino.quickdrawcnn.github.io
+# https://gianlucacostantino.github.io/quickdrawcnn.github.io/
