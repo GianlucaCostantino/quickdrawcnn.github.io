@@ -60,15 +60,14 @@
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // Fill white on init so pixel data is never transparent
   function clearCanvas() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     document.getElementById('results').innerHTML = '';
   }
-  clearCanvas(); // initialise white background immediately
+  clearCanvas(); // initialise white background on page load
 
-  // ── Load model ──────────────────────────────────────────
+  // ── Load model ───────────────────────────────────────────
   async function loadModel() {
     [model, classes] = await Promise.all([
       tf.loadLayersModel('tfjs_model_vero/tfjs_model/model.json'),
@@ -81,7 +80,7 @@
     document.getElementById('status').textContent = '✗ Failed to load model: ' + e.message;
   });
 
-  // ── Canvas drawing ───────────────────────────────────────
+  // ── Drawing ──────────────────────────────────────────────
   function getPos(e) {
     const r = canvas.getBoundingClientRect();
     const src = e.touches ? e.touches[0] : e;
@@ -116,27 +115,30 @@
   canvas.addEventListener('touchmove',  draw,      { passive: false });
   canvas.addEventListener('touchend',   stopDraw,  { passive: false });
 
-  // ── Bounding box — detects dark pixels on white background ──
+  // ── Bounding box ─────────────────────────────────────────
   function getMinBoundingBox() {
     const { data, width, height } =
       ctx.getImageData(0, 0, canvas.width, canvas.height);
     let minX = width, maxX = 0, minY = height, maxY = 0;
+    let found = false;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = (y * width + x) * 4;
         const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        if (brightness < 128) { // dark pixel = part of the drawing
+        if (brightness < 128) {
+          found = true;
           minX = Math.min(minX, x); maxX = Math.max(maxX, x);
           minY = Math.min(minY, y); maxY = Math.max(maxY, y);
         }
       }
     }
+    if (!found) return null;
     const pad = 10;
     return {
-      x: Math.max(0,      minX - pad),
-      y: Math.max(0,      minY - pad),
-      w: Math.min(width,  maxX - minX + pad * 2),
-      h: Math.min(height, maxY - minY + pad * 2),
+      x: Math.max(0,             minX - pad),
+      y: Math.max(0,             minY - pad),
+      w: Math.min(canvas.width,  maxX - minX + pad * 2),
+      h: Math.min(canvas.height, maxY - minY + pad * 2),
     };
   }
 
@@ -144,24 +146,26 @@
   async function runPredict() {
     if (!model) return;
     const box = getMinBoundingBox();
-    if (box.w <= 0 || box.h <= 0) {
-      alert('Draw something first!'); return;
-    }
+    if (!box) { alert('Draw something first!'); return; }
 
-    const probs = tf.tidy(() => {
+    const tensor = tf.tidy(() => {
       const raw = tf.browser
         .fromPixels(canvas, 1)
-        .slice([box.y, box.x, 0], [box.h, box.w, 1])  // 3-D crop
+        .slice([box.y, box.x, 0], [box.h, box.w, 1])  // crop, rank-3
         .resizeBilinear([28, 28])                      // → [28, 28, 1]
-        .toFloat().div(255);
-      // Invert colours: model was trained on white strokes on black background
-      return tf.scalar(1).sub(raw).expandDims(0);      // → [1, 28, 28, 1]
+        .toFloat()
+        .div(255);
+      const inverted = tf.scalar(1).sub(raw);          // invert colours
+      return inverted.expandDims(0);                   // → [1, 28, 28, 1]
     });
 
-    const values = await probs.array();
-    probs.dispose();
+    const output = model.predict(tensor);              // → [1, 100]
+    tensor.dispose();
 
-    const top5 = values
+    const values = await output.data();                // Float32Array, length 100
+    output.dispose();
+
+    const top5 = Array.from(values)
       .map((p, i) => ({ label: classes[i], prob: p }))
       .sort((a, b) => b.prob - a.prob)
       .slice(0, 5);
@@ -179,7 +183,7 @@
         </div>
         <div class="bar-bg">
           <div class="bar-fg ${i === 0 ? 'top' : ''}"
-               style="width:${(r.prob * 100).toFixed(1)}%"></div>
+               style="width:${Math.min(100, r.prob * 100).toFixed(1)}%"></div>
         </div>
       </div>`).join('');
   }
